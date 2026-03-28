@@ -10,7 +10,6 @@ from sqlalchemy import create_engine, text
 # ==================================================
 # PAGE CONFIG
 # ==================================================
-
 st.set_page_config(
     page_title="WorkLog Pro",
     page_icon="⏱️",
@@ -21,19 +20,16 @@ st.set_page_config(
 # ==================================================
 # DATABASE CONFIG
 # ==================================================
-
 DATABASE_URL = os.getenv("DATABASE_URL")
-
 if not DATABASE_URL:
     st.error("DATABASE_URL is not configured. Please add it in Render environment variables.")
     st.stop()
 
-engine = create_engine(DATABASE_URL)
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
 # ==================================================
 # DATABASE INIT
 # ==================================================
-
 def init_db():
     with engine.begin() as conn:
         conn.execute(text("""
@@ -56,7 +52,6 @@ init_db()
 # ==================================================
 # HELPERS
 # ==================================================
-
 def calculate_hours(start_time, end_time):
     try:
         s = datetime.strptime(start_time, "%H:%M")
@@ -92,8 +87,7 @@ def delete_entry(row_id):
         conn.execute(text("DELETE FROM timelog WHERE id = :id"), {"id": row_id})
 
 def fetch_entries():
-    query = "SELECT * FROM timelog ORDER BY entry_date DESC, start_time DESC"
-    return pd.read_sql(query, engine)
+    return pd.read_sql("SELECT * FROM timelog ORDER BY entry_date DESC, start_time DESC", engine)
 
 def format_hours(val):
     try:
@@ -119,7 +113,6 @@ def dataframe_to_excel_bytes(df_export, sheet_name="WorkLog"):
 # ==================================================
 # SESSION STATE
 # ==================================================
-
 defaults = {
     "session_running": False,
     "session_paused": False,
@@ -133,15 +126,13 @@ defaults = {
     "block_start": None,
     "last_logged": "—"
 }
-
 for k, v in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
 # ==================================================
-# BLUE PREMIUM STYLING
+# STYLING
 # ==================================================
-
 st.markdown("""
 <style>
 #MainMenu {visibility: hidden;}
@@ -373,9 +364,7 @@ div[data-testid="stDataFrame"] {
 # ==================================================
 # LOAD DATA
 # ==================================================
-
 df = fetch_entries()
-
 if not df.empty:
     df["hours"] = pd.to_numeric(df["hours"], errors="coerce").fillna(0)
     df["entry_date"] = to_datetime_safe(df["entry_date"])
@@ -401,21 +390,12 @@ month_hours = month_df["hours"].sum() if not month_df.empty else 0
 billable_pct = round((billable_hours / total_hours) * 100, 1) if total_hours > 0 else 0
 
 top_client = "—"
-top_task = "—"
-
-if not df.empty:
-    client_summary = df.groupby("client", dropna=False)["hours"].sum().sort_values(ascending=False)
-    task_summary = df.groupby("task", dropna=False)["hours"].sum().sort_values(ascending=False)
-
-    if not client_summary.empty:
-        top_client = client_summary.index[0] if str(client_summary.index[0]).strip() else "—"
-    if not task_summary.empty:
-        top_task = task_summary.index[0] if str(task_summary.index[0]).strip() else "—"
+if not df.empty and not df.groupby("client")["hours"].sum().empty:
+    top_client = df.groupby("client")["hours"].sum().sort_values(ascending=False).index[0]
 
 # ==================================================
 # HEADER
 # ==================================================
-
 st.markdown("""
 <div class="hero">
     <div class="hero-title">WorkLog Pro</div>
@@ -428,9 +408,6 @@ st.markdown("""
 # ==================================================
 # KPI ROW
 # ==================================================
-
-k1, k2, k3, k4, k5, k6 = st.columns(6)
-
 def kpi_card(col, label, value, note=""):
     with col:
         st.markdown(f"""
@@ -441,6 +418,7 @@ def kpi_card(col, label, value, note=""):
         </div>
         """, unsafe_allow_html=True)
 
+k1, k2, k3, k4, k5, k6 = st.columns(6)
 kpi_card(k1, "Today's Hours", format_hours(today_hours), "Current day logged effort")
 kpi_card(k2, "Today's Billable", format_hours(today_billable), "Billable execution volume")
 kpi_card(k3, "This Week", format_hours(week_hours), "Rolling 7-day output")
@@ -461,36 +439,32 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 # ==================================================
 # DASHBOARD
 # ==================================================
-
 with tab1:
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.markdown('<div class="card-title">Quick Time Entry</div>', unsafe_allow_html=True)
     st.markdown('<div class="card-sub">Fast manual logging for completed work blocks and ad hoc entries.</div>', unsafe_allow_html=True)
 
     q1, q2, q3, q4 = st.columns(4)
-
     with q1:
-        quick_date = st.date_input("Date", value=date.today())
+        quick_date = st.date_input("Date", value=date.today(), key="quick_date")
     with q2:
-        quick_start = st.text_input("Start Time (HH:MM)", value="09:00")
+        quick_start = st.text_input("Start Time (HH:MM)", value="09:00", key="quick_start")
     with q3:
-        quick_end = st.text_input("End Time (HH:MM)", value="10:00")
+        quick_end = st.text_input("End Time (HH:MM)", value="10:00", key="quick_end")
     with q4:
-        quick_billable = st.selectbox("Billable", ["Yes", "No"])
+        quick_billable = st.selectbox("Billable", ["Yes", "No"], key="quick_billable")
 
     q5, q6 = st.columns(2)
-
     with q5:
-        quick_client = st.text_input("Client / Entity")
+        quick_client = st.text_input("Client / Entity", key="quick_client")
     with q6:
-        quick_task = st.text_input("Task / Work Item")
+        quick_task = st.text_input("Task / Work Item", key="quick_task")
 
-    quick_remarks = st.text_area("Remarks", height=90)
-
+    quick_remarks = st.text_area("Remarks", height=90, key="quick_remarks")
     quick_hours = calculate_hours(quick_start, quick_end)
     st.info(f"Calculated Hours: {quick_hours:.2f}")
 
-    if st.button("Save Quick Entry", use_container_width=True):
+    if st.button("Save Quick Entry", use_container_width=True, key="save_quick"):
         if not quick_client.strip() or not quick_task.strip():
             st.error("Please enter Client and Task.")
         elif quick_hours <= 0:
@@ -518,12 +492,11 @@ with tab1:
         st.markdown('<div class="card-title">Today’s Work Sheet</div>', unsafe_allow_html=True)
         st.markdown('<div class="card-sub">Visible operating sheet for the current day.</div>', unsafe_allow_html=True)
 
-        today_display_df = today_df.copy() if not today_df.empty else pd.DataFrame()
-
-        if not today_display_df.empty:
-            today_display_df["entry_date"] = today_display_df["entry_date"].dt.strftime("%Y-%m-%d")
+        if not today_df.empty:
+            show_today = today_df.copy()
+            show_today["entry_date"] = show_today["entry_date"].dt.strftime("%Y-%m-%d")
             st.dataframe(
-                today_display_df[["entry_date", "start_time", "end_time", "hours", "client", "task", "billable", "remarks"]],
+                show_today[["entry_date", "start_time", "end_time", "hours", "client", "task", "billable", "remarks"]],
                 use_container_width=True,
                 hide_index=True
             )
@@ -540,7 +513,6 @@ with tab1:
         if not df.empty:
             recent = df.head(6).copy()
             recent["entry_date_display"] = recent["entry_date"].dt.strftime("%Y-%m-%d")
-
             for _, r in recent.iterrows():
                 billable_class = "pill" if safe_text(r["billable"]) == "Yes" else "pill pill-no"
                 st.markdown(f"""
@@ -561,7 +533,6 @@ with tab1:
 # ==================================================
 # LIVE SESSION
 # ==================================================
-
 with tab2:
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.markdown('<div class="card-title">Live Session Tracker</div>', unsafe_allow_html=True)
@@ -600,9 +571,9 @@ with tab2:
         """, unsafe_allow_html=True)
 
     with right:
-        mode = st.selectbox("Session Mode", ["AUTO", "MANUAL"], index=0 if st.session_state.session_mode == "AUTO" else 1)
-        interval = st.selectbox("Auto Log Interval (minutes)", [15, 30, 45, 60], index=[15,30,45,60].index(st.session_state.session_interval) if st.session_state.session_interval in [15,30,45,60] else 3)
-        session_billable = st.selectbox("Billable", ["Yes", "No"], index=0 if st.session_state.session_billable == "Yes" else 1)
+        mode = st.selectbox("Session Mode", ["AUTO", "MANUAL"], index=0 if st.session_state.session_mode == "AUTO" else 1, key="session_mode")
+        interval = st.selectbox("Auto Log Interval (minutes)", [15, 30, 45, 60], index=[15,30,45,60].index(st.session_state.session_interval) if st.session_state.session_interval in [15,30,45,60] else 3, key="session_interval")
+        session_billable = st.selectbox("Billable", ["Yes", "No"], index=0 if st.session_state.session_billable == "Yes" else 1, key="live_session_billable")
         session_client = st.text_input("Client / Entity", value=st.session_state.session_client, key="live_client")
         session_task = st.text_input("Task / Work Item", value=st.session_state.session_task, key="live_task")
         session_remarks = st.text_area("Remarks", value=st.session_state.session_remarks, height=90, key="live_remarks")
@@ -617,7 +588,7 @@ with tab2:
     b1, b2, b3, b4, b5 = st.columns(5)
 
     with b1:
-        if st.button("Start Session", use_container_width=True):
+        if st.button("Start Session", use_container_width=True, key="start_session"):
             if not st.session_state.session_client.strip() or not st.session_state.session_task.strip():
                 st.error("Please enter Client and Task before starting a session.")
             else:
@@ -629,7 +600,7 @@ with tab2:
                 st.rerun()
 
     with b2:
-        if st.button("Pause", use_container_width=True):
+        if st.button("Pause", use_container_width=True, key="pause_session"):
             if st.session_state.session_running:
                 st.session_state.session_running = False
                 st.session_state.session_paused = True
@@ -637,7 +608,7 @@ with tab2:
                 st.rerun()
 
     with b3:
-        if st.button("Resume", use_container_width=True):
+        if st.button("Resume", use_container_width=True, key="resume_session"):
             if st.session_state.session_paused:
                 st.session_state.session_running = True
                 st.session_state.session_paused = False
@@ -645,7 +616,7 @@ with tab2:
                 st.rerun()
 
     with b4:
-        if st.button("Log Current Block", use_container_width=True):
+        if st.button("Log Current Block", use_container_width=True, key="log_current_block"):
             if st.session_state.block_start:
                 now = datetime.now()
                 start_dt = st.session_state.block_start
@@ -671,7 +642,7 @@ with tab2:
                     st.error("Block duration is too short.")
 
     with b5:
-        if st.button("Stop Session", use_container_width=True):
+        if st.button("Stop Session", use_container_width=True, key="stop_session"):
             if st.session_state.block_start:
                 now = datetime.now()
                 start_dt = st.session_state.block_start
@@ -700,10 +671,7 @@ with tab2:
 
     st.markdown('</div>', unsafe_allow_html=True)
 
-# ==================================================
-# AUTO MODE CHECK
-# ==================================================
-
+# AUTO MODE
 if st.session_state.session_running and st.session_state.session_mode == "AUTO" and st.session_state.block_start:
     now = datetime.now()
     mins = (now - st.session_state.block_start).total_seconds() / 60
@@ -731,20 +699,18 @@ if st.session_state.session_running and st.session_state.session_mode == "AUTO" 
 # ==================================================
 # REGISTER
 # ==================================================
-
 with tab3:
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.markdown('<div class="card-title">Execution Register</div>', unsafe_allow_html=True)
     st.markdown('<div class="card-sub">Complete searchable record of all work logs.</div>', unsafe_allow_html=True)
 
     f1, f2, f3 = st.columns(3)
-
     with f1:
-        search_text = st.text_input("Search", value="", key="search_register")
+        search_text = st.text_input("Search", value="", key="register_search")
     with f2:
-        filter_billable = st.selectbox("Billable Filter", ["All", "Yes", "No"], key="billable_filter")
+        filter_billable = st.selectbox("Billable Filter", ["All", "Yes", "No"], key="register_billable_filter")
     with f3:
-        filter_month = st.text_input("Month Filter (YYYY-MM)", value="", key="month_filter")
+        filter_month = st.text_input("Month Filter (YYYY-MM)", value="", key="register_month_filter")
 
     filtered_df = df.copy()
 
@@ -766,7 +732,6 @@ with tab3:
     if not filtered_df.empty:
         display_df = filtered_df.copy()
         display_df["entry_date"] = display_df["entry_date"].dt.strftime("%Y-%m-%d")
-
         st.dataframe(
             display_df[["entry_date", "start_time", "end_time", "hours", "client", "task", "billable", "remarks"]],
             use_container_width=True,
@@ -778,19 +743,9 @@ with tab3:
 
         d1, d2 = st.columns(2)
         with d1:
-            st.download_button(
-                label="Export Filtered CSV",
-                data=csv_bytes,
-                file_name=f"time_log_{date.today()}.csv",
-                mime="text/csv"
-            )
+            st.download_button("Export Filtered CSV", data=csv_bytes, file_name=f"time_log_{date.today()}.csv", mime="text/csv", key="download_filtered_csv")
         with d2:
-            st.download_button(
-                label="Export Filtered Excel",
-                data=excel_bytes,
-                file_name=f"time_log_{date.today()}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+            st.download_button("Export Filtered Excel", data=excel_bytes, file_name=f"time_log_{date.today()}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_filtered_excel")
     else:
         st.info("No entries found for current filters.")
 
@@ -814,7 +769,7 @@ with tab3:
         selected_label = st.selectbox("Select Entry", selector_df["label"].tolist(), key="delete_selector")
         selected_row = selector_df[selector_df["label"] == selected_label].iloc[0]
 
-        if st.button("Delete Selected Entry", use_container_width=True):
+        if st.button("Delete Selected Entry", use_container_width=True, key="delete_selected_entry"):
             delete_entry(selected_row["id"])
             st.success("Entry deleted successfully.")
             st.rerun()
@@ -826,7 +781,6 @@ with tab3:
 # ==================================================
 # ANALYTICS
 # ==================================================
-
 with tab4:
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.markdown('<div class="card-title">Analytics Dashboard</div>', unsafe_allow_html=True)
@@ -868,7 +822,6 @@ with tab4:
 # ==================================================
 # SETTINGS
 # ==================================================
-
 with tab5:
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.markdown('<div class="card-title">System & Backup</div>', unsafe_allow_html=True)
@@ -877,8 +830,6 @@ with tab5:
     s1, s2 = st.columns(2)
     s1.metric("Database", "Cloud PostgreSQL")
     s2.metric("Total Entries", int(len(df)))
-
-    st.write("")
 
     if not df.empty:
         csv_data = df.copy()
@@ -890,19 +841,9 @@ with tab5:
 
         b1, b2 = st.columns(2)
         with b1:
-            st.download_button(
-                label="Download Full CSV Backup",
-                data=full_csv,
-                file_name=f"worklog_full_backup_{date.today()}.csv",
-                mime="text/csv"
-            )
+            st.download_button("Download Full CSV Backup", data=full_csv, file_name=f"worklog_full_backup_{date.today()}.csv", mime="text/csv", key="download_full_csv")
         with b2:
-            st.download_button(
-                label="Download Full Excel Backup",
-                data=full_excel,
-                file_name=f"worklog_full_backup_{date.today()}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+            st.download_button("Download Full Excel Backup", data=full_excel, file_name=f"worklog_full_backup_{date.today()}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_full_excel")
 
     st.info("Your data is now designed to persist independently of app restarts and redeployments.")
 
