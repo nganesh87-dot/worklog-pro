@@ -1,12 +1,11 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
 import plotly.express as px
 from datetime import datetime, date, timedelta
 import uuid
 import os
-
-DB_NAME = "worklog.db"
+from io import BytesIO
+from sqlalchemy import create_engine, text
 
 st.set_page_config(
     page_title="WorkLog Pro",
@@ -15,31 +14,34 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# ==================================================
-# DATABASE
-# ==================================================
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-def get_conn():
-    return sqlite3.connect(DB_NAME, check_same_thread=False)
+if not DATABASE_URL:
+    st.error("DATABASE_URL is not configured. Please add it in Render environment variables.")
+    st.stop()
 
-conn = get_conn()
+engine = create_engine(DATABASE_URL)
+
+# ==================================================
+# DATABASE INIT
+# ==================================================
 
 def init_db():
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS timelog (
-            id TEXT PRIMARY KEY,
-            entry_date TEXT,
-            start_time TEXT,
-            end_time TEXT,
-            hours REAL,
-            client TEXT,
-            task TEXT,
-            remarks TEXT,
-            billable TEXT,
-            created_at TEXT
-        )
-    """)
-    conn.commit()
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS timelog (
+                id TEXT PRIMARY KEY,
+                entry_date DATE,
+                start_time TEXT,
+                end_time TEXT,
+                hours NUMERIC,
+                client TEXT,
+                task TEXT,
+                remarks TEXT,
+                billable TEXT,
+                created_at TIMESTAMP
+            )
+        """))
 
 init_db()
 
@@ -57,32 +59,33 @@ def calculate_hours(start_time, end_time):
         return 0
 
 def insert_entry(entry_date, start_time, end_time, hours, client, task, remarks, billable):
-    conn.execute("""
-        INSERT INTO timelog (id, entry_date, start_time, end_time, hours, client, task, remarks, billable, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        str(uuid.uuid4()),
-        str(entry_date),
-        start_time,
-        end_time,
-        hours,
-        client,
-        task,
-        remarks,
-        billable,
-        datetime.now().isoformat()
-    ))
-    conn.commit()
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO timelog (
+                id, entry_date, start_time, end_time, hours, client, task, remarks, billable, created_at
+            ) VALUES (
+                :id, :entry_date, :start_time, :end_time, :hours, :client, :task, :remarks, :billable, :created_at
+            )
+        """), {
+            "id": str(uuid.uuid4()),
+            "entry_date": str(entry_date),
+            "start_time": start_time,
+            "end_time": end_time,
+            "hours": float(hours),
+            "client": client,
+            "task": task,
+            "remarks": remarks,
+            "billable": billable,
+            "created_at": datetime.now()
+        })
 
 def delete_entry(row_id):
-    conn.execute("DELETE FROM timelog WHERE id=?", (row_id,))
-    conn.commit()
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM timelog WHERE id = :id"), {"id": row_id})
 
 def fetch_entries():
-    return pd.read_sql_query(
-        "SELECT * FROM timelog ORDER BY entry_date DESC, start_time DESC",
-        conn
-    )
+    query = "SELECT * FROM timelog ORDER BY entry_date DESC, start_time DESC"
+    return pd.read_sql(query, engine)
 
 def format_hours(val):
     try:
@@ -98,11 +101,12 @@ def safe_text(x):
 def to_datetime_safe(series):
     return pd.to_datetime(series, errors="coerce")
 
-def export_db_bytes():
-    if os.path.exists(DB_NAME):
-        with open(DB_NAME, "rb") as f:
-            return f.read()
-    return None
+def dataframe_to_excel_bytes(df_export, sheet_name="WorkLog"):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df_export.to_excel(writer, index=False, sheet_name=sheet_name)
+    output.seek(0)
+    return output.getvalue()
 
 # ==================================================
 # SESSION STATE
@@ -134,7 +138,7 @@ for k, v in defaults.items():
         st.session_state[k] = v
 
 # ==================================================
-# STYLING
+# BLUE STYLING
 # ==================================================
 
 st.markdown("""
@@ -155,17 +159,17 @@ html, body, [class*="css"] {
 
 .main {
     background:
-        radial-gradient(circle at top left, rgba(219,234,254,0.78), transparent 25%),
-        radial-gradient(circle at top right, rgba(237,233,254,0.72), transparent 22%),
-        linear-gradient(180deg, #eef4ff 0%, #f8fbff 100%);
+        radial-gradient(circle at top left, rgba(191,219,254,0.85), transparent 25%),
+        radial-gradient(circle at top right, rgba(147,197,253,0.60), transparent 22%),
+        linear-gradient(180deg, #eaf3ff 0%, #f6fbff 100%);
 }
 
 .hero {
-    background: rgba(255,255,255,0.88);
-    border: 1px solid rgba(148,163,184,0.12);
+    background: linear-gradient(135deg, rgba(255,255,255,0.92), rgba(239,246,255,0.94));
+    border: 1px solid rgba(96,165,250,0.16);
     border-radius: 28px;
     padding: 28px 30px 24px 30px;
-    box-shadow: 0 20px 48px rgba(15,23,42,0.08);
+    box-shadow: 0 22px 50px rgba(30,64,175,0.10);
     margin-bottom: 1.1rem;
 }
 
@@ -179,18 +183,18 @@ html, body, [class*="css"] {
 }
 
 .hero-sub {
-    color: #64748b;
+    color: #475569;
     font-size: 0.98rem;
     line-height: 1.75;
     max-width: 1050px;
 }
 
 .section-card {
-    background: rgba(255,255,255,0.90);
-    border: 1px solid rgba(148,163,184,0.12);
+    background: linear-gradient(180deg, rgba(255,255,255,0.94), rgba(248,252,255,0.96));
+    border: 1px solid rgba(96,165,250,0.14);
     border-radius: 24px;
     padding: 22px 22px 18px 22px;
-    box-shadow: 0 14px 35px rgba(15,23,42,0.07);
+    box-shadow: 0 14px 35px rgba(37,99,235,0.08);
     margin-bottom: 1rem;
 }
 
@@ -210,21 +214,21 @@ html, body, [class*="css"] {
 }
 
 .kpi {
-    background: linear-gradient(180deg, rgba(255,255,255,0.97) 0%, rgba(248,250,252,0.96) 100%);
-    border: 1px solid rgba(148,163,184,0.12);
+    background: linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(239,246,255,0.98) 100%);
+    border: 1px solid rgba(96,165,250,0.16);
     border-radius: 22px;
     padding: 18px 18px 16px 18px;
-    box-shadow: 0 12px 28px rgba(15,23,42,0.06);
+    box-shadow: 0 12px 28px rgba(37,99,235,0.08);
     min-height: 128px;
 }
 
 .kpi-label {
-    color: #64748b;
+    color: #1d4ed8;
     font-size: 0.80rem;
     text-transform: uppercase;
     letter-spacing: 0.55px;
     margin-bottom: 10px;
-    font-weight: 700;
+    font-weight: 800;
 }
 
 .kpi-value {
@@ -242,11 +246,12 @@ html, body, [class*="css"] {
 }
 
 .timer-box {
-    background: linear-gradient(180deg, rgba(239,246,255,0.88) 0%, rgba(255,255,255,0.96) 100%);
-    border: 1px solid rgba(59,130,246,0.14);
+    background: linear-gradient(135deg, rgba(219,234,254,0.82) 0%, rgba(255,255,255,0.96) 100%);
+    border: 1px solid rgba(59,130,246,0.20);
     border-radius: 24px;
     padding: 24px;
     min-height: 235px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.55);
 }
 
 .timer-big {
@@ -262,24 +267,24 @@ html, body, [class*="css"] {
     padding: 7px 12px;
     border-radius: 999px;
     background: rgba(37,99,235,0.12);
-    color: #2563eb;
+    color: #1d4ed8;
     font-size: 0.8rem;
-    font-weight: 700;
+    font-weight: 800;
     margin-bottom: 0.9rem;
 }
 
 .small-muted {
-    color: #64748b;
+    color: #475569;
     font-size: 0.9rem;
     line-height: 1.8;
 }
 
 .activity-card {
-    background: linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(248,250,252,0.96) 100%);
-    border: 1px solid rgba(148,163,184,0.12);
+    background: linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(239,246,255,0.96) 100%);
+    border: 1px solid rgba(96,165,250,0.14);
     border-radius: 20px;
     padding: 16px 18px;
-    box-shadow: 0 10px 24px rgba(15,23,42,0.05);
+    box-shadow: 0 10px 24px rgba(37,99,235,0.06);
     margin-bottom: 0.8rem;
 }
 
@@ -300,9 +305,9 @@ html, body, [class*="css"] {
     padding: 5px 10px;
     border-radius: 999px;
     background: rgba(37,99,235,0.12);
-    color: #2563eb;
+    color: #1d4ed8;
     font-size: 0.76rem;
-    font-weight: 700;
+    font-weight: 800;
     margin-top: 0.6rem;
 }
 
@@ -318,18 +323,27 @@ div[data-testid="stDataFrame"] {
 
 .stButton > button {
     border-radius: 14px !important;
-    font-weight: 700 !important;
+    font-weight: 800 !important;
     padding: 0.64rem 1rem !important;
+    background: linear-gradient(135deg, #2563eb, #1d4ed8) !important;
+    color: white !important;
+    border: none !important;
+    box-shadow: 0 8px 18px rgba(37,99,235,0.20) !important;
 }
 
 .stDownloadButton > button {
     border-radius: 14px !important;
-    font-weight: 700 !important;
+    font-weight: 800 !important;
     padding: 0.64rem 1rem !important;
+    background: linear-gradient(135deg, #0ea5e9, #2563eb) !important;
+    color: white !important;
+    border: none !important;
+    box-shadow: 0 8px 18px rgba(14,165,233,0.18) !important;
 }
 
 .stTextInput input, .stTextArea textarea, .stSelectbox div[data-baseweb="select"] > div {
     border-radius: 14px !important;
+    border: 1px solid rgba(96,165,250,0.18) !important;
 }
 
 .stTabs [data-baseweb="tab-list"] {
@@ -338,25 +352,18 @@ div[data-testid="stDataFrame"] {
 }
 
 .stTabs [data-baseweb="tab"] {
-    background: rgba(255,255,255,0.82);
-    border: 1px solid rgba(148,163,184,0.12);
+    background: rgba(255,255,255,0.86);
+    border: 1px solid rgba(96,165,250,0.16);
     border-radius: 14px;
     padding: 10px 18px;
-    font-weight: 700;
-    color: #334155;
+    font-weight: 800;
+    color: #1e3a8a;
 }
 
 .stTabs [aria-selected="true"] {
-    background: #2563eb !important;
+    background: linear-gradient(135deg, #2563eb, #1d4ed8) !important;
     color: white !important;
     border-color: #2563eb !important;
-}
-
-hr {
-    margin-top: 0.5rem !important;
-    margin-bottom: 1rem !important;
-    border: none;
-    border-top: 1px solid rgba(148,163,184,0.14);
 }
 </style>
 """, unsafe_allow_html=True)
@@ -411,8 +418,7 @@ st.markdown("""
 <div class="hero">
     <div class="hero-title">WorkLog Pro</div>
     <div class="hero-sub">
-        Premium time tracking, live work capture, dashboard analytics and local database storage.
-        This version is structured as a proper internal work console with operational visibility.
+        Permanent cloud-backed time tracking, live work capture, dashboard analytics and mobile-ready access.
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -442,10 +448,6 @@ kpi_card(k6, "Top Client", top_client if len(str(top_client)) < 16 else str(top_
 
 st.write("")
 
-# ==================================================
-# TABS
-# ==================================================
-
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "Dashboard",
     "Live Session",
@@ -455,7 +457,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 ])
 
 # ==================================================
-# TAB 1 — DASHBOARD
+# DASHBOARD
 # ==================================================
 
 with tab1:
@@ -506,59 +508,8 @@ with tab1:
 
         st.markdown('</div>', unsafe_allow_html=True)
 
-    lower_left, lower_right = st.columns([1, 1])
-
-    with lower_left:
-        st.markdown('<div class="section-card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">Quick Add Entry</div>', unsafe_allow_html=True)
-        st.markdown('<div class="card-sub">Fast manual entry for missed work blocks or corrections.</div>', unsafe_allow_html=True)
-
-        with st.form("quick_add_form"):
-            q1, q2 = st.columns(2)
-
-            with q1:
-                entry_date = st.date_input("Date", value=st.session_state.quick_date, key="qa_date")
-                start_time = st.text_input("Start Time (HH:MM)", value=st.session_state.quick_start, key="qa_start")
-                client = st.text_input("Client", value=st.session_state.quick_client, key="qa_client")
-                remarks = st.text_area("Remarks", value=st.session_state.quick_remarks, height=90, key="qa_remarks")
-
-            with q2:
-                end_time = st.text_input("End Time (HH:MM)", value=st.session_state.quick_end, key="qa_end")
-                billable = st.selectbox("Billable", ["Yes", "No"], index=0 if st.session_state.quick_billable == "Yes" else 1, key="qa_billable")
-                task = st.text_input("Task", value=st.session_state.quick_task, key="qa_task")
-
-            submitted = st.form_submit_button("Save Entry", use_container_width=True)
-
-            if submitted:
-                hrs = calculate_hours(start_time, end_time)
-                if hrs <= 0:
-                    st.error("End time must be later than start time.")
-                elif not task.strip():
-                    st.error("Task is required.")
-                else:
-                    insert_entry(entry_date, start_time, end_time, hrs, client, task, remarks, billable)
-                    st.success("Entry saved successfully.")
-                    st.rerun()
-
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    with lower_right:
-        st.markdown('<div class="section-card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">Operational Snapshot</div>', unsafe_allow_html=True)
-        st.markdown('<div class="card-sub">Quick directional view of current work allocation.</div>', unsafe_allow_html=True)
-
-        s1, s2 = st.columns(2)
-        s1.metric("Top Client", top_client)
-        s2.metric("Top Task", top_task)
-
-        s3, s4 = st.columns(2)
-        s3.metric("Total Hours", format_hours(total_hours))
-        s4.metric("Billable Hours", format_hours(billable_hours))
-
-        st.markdown('</div>', unsafe_allow_html=True)
-
 # ==================================================
-# TAB 2 — LIVE SESSION
+# LIVE SESSION
 # ==================================================
 
 with tab2:
@@ -728,7 +679,7 @@ if st.session_state.session_running and st.session_state.session_mode == "AUTO" 
         st.rerun()
 
 # ==================================================
-# TAB 3 — REGISTER
+# REGISTER
 # ==================================================
 
 with tab3:
@@ -772,12 +723,24 @@ with tab3:
             hide_index=True
         )
 
-        st.download_button(
-            label="Export Filtered CSV",
-            data=display_df.to_csv(index=False).encode("utf-8"),
-            file_name=f"time_log_{date.today()}.csv",
-            mime="text/csv"
-        )
+        csv_bytes = display_df.to_csv(index=False).encode("utf-8")
+        excel_bytes = dataframe_to_excel_bytes(display_df, sheet_name="Filtered Register")
+
+        d1, d2 = st.columns(2)
+        with d1:
+            st.download_button(
+                label="Export Filtered CSV",
+                data=csv_bytes,
+                file_name=f"time_log_{date.today()}.csv",
+                mime="text/csv"
+            )
+        with d2:
+            st.download_button(
+                label="Export Filtered Excel",
+                data=excel_bytes,
+                file_name=f"time_log_{date.today()}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
     else:
         st.info("No entries found for current filters.")
 
@@ -811,7 +774,7 @@ with tab3:
     st.markdown('</div>', unsafe_allow_html=True)
 
 # ==================================================
-# TAB 4 — ANALYTICS
+# ANALYTICS
 # ==================================================
 
 with tab4:
@@ -853,16 +816,16 @@ with tab4:
     st.markdown('</div>', unsafe_allow_html=True)
 
 # ==================================================
-# TAB 5 — SETTINGS
+# SETTINGS
 # ==================================================
 
 with tab5:
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.markdown('<div class="card-title">System & Backup</div>', unsafe_allow_html=True)
-    st.markdown('<div class="card-sub">Use this section for backup and basic environment visibility.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="card-sub">Use this section for backup and environment visibility.</div>', unsafe_allow_html=True)
 
     s1, s2 = st.columns(2)
-    s1.metric("Database File", DB_NAME)
+    s1.metric("Database", "Cloud PostgreSQL")
     s2.metric("Total Entries", int(len(df)))
 
     st.write("")
@@ -871,22 +834,26 @@ with tab5:
         csv_data = df.copy()
         if "entry_date" in csv_data.columns:
             csv_data["entry_date"] = csv_data["entry_date"].dt.strftime("%Y-%m-%d")
-        st.download_button(
-            label="Download Full CSV Backup",
-            data=csv_data.to_csv(index=False).encode("utf-8"),
-            file_name=f"worklog_full_backup_{date.today()}.csv",
-            mime="text/csv"
-        )
 
-    db_bytes = export_db_bytes()
-    if db_bytes:
-        st.download_button(
-            label="Download SQLite Database Backup",
-            data=db_bytes,
-            file_name=f"worklog_backup_{date.today()}.db",
-            mime="application/octet-stream"
-        )
+        full_csv = csv_data.to_csv(index=False).encode("utf-8")
+        full_excel = dataframe_to_excel_bytes(csv_data, sheet_name="Full Backup")
 
-    st.info("Best practice: keep a periodic backup of both the CSV export and the SQLite database file.")
+        b1, b2 = st.columns(2)
+        with b1:
+            st.download_button(
+                label="Download Full CSV Backup",
+                data=full_csv,
+                file_name=f"worklog_full_backup_{date.today()}.csv",
+                mime="text/csv"
+            )
+        with b2:
+            st.download_button(
+                label="Download Full Excel Backup",
+                data=full_excel,
+                file_name=f"worklog_full_backup_{date.today()}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+    st.info("Your data is now designed to persist independently of app restarts and redeployments.")
 
     st.markdown('</div>', unsafe_allow_html=True)
