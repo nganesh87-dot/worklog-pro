@@ -7,12 +7,20 @@ import os
 from io import BytesIO
 from sqlalchemy import create_engine, text
 
+# ==================================================
+# PAGE CONFIG
+# ==================================================
+
 st.set_page_config(
     page_title="WorkLog Pro",
     page_icon="⏱️",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
+
+# ==================================================
+# DATABASE CONFIG
+# ==================================================
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -123,14 +131,7 @@ defaults = {
     "session_interval": 60,
     "session_start": None,
     "block_start": None,
-    "last_logged": "—",
-    "quick_date": date.today(),
-    "quick_start": "09:00",
-    "quick_end": "10:00",
-    "quick_billable": "Yes",
-    "quick_client": "",
-    "quick_task": "",
-    "quick_remarks": ""
+    "last_logged": "—"
 }
 
 for k, v in defaults.items():
@@ -138,7 +139,7 @@ for k, v in defaults.items():
         st.session_state[k] = v
 
 # ==================================================
-# BLUE STYLING
+# BLUE PREMIUM STYLING
 # ==================================================
 
 st.markdown("""
@@ -152,7 +153,7 @@ html, body, [class*="css"] {
 }
 
 .block-container {
-    padding-top: 1.6rem !important;
+    padding-top: 1.2rem !important;
     padding-bottom: 2rem !important;
     max-width: 1500px;
 }
@@ -165,12 +166,12 @@ html, body, [class*="css"] {
 }
 
 .hero {
-    background: linear-gradient(135deg, rgba(255,255,255,0.92), rgba(239,246,255,0.94));
+    background: linear-gradient(135deg, rgba(255,255,255,0.95), rgba(239,246,255,0.95));
     border: 1px solid rgba(96,165,250,0.16);
     border-radius: 28px;
     padding: 28px 30px 24px 30px;
     box-shadow: 0 22px 50px rgba(30,64,175,0.10);
-    margin-bottom: 1.1rem;
+    margin-bottom: 1.2rem;
 }
 
 .hero-title {
@@ -190,7 +191,7 @@ html, body, [class*="css"] {
 }
 
 .section-card {
-    background: linear-gradient(180deg, rgba(255,255,255,0.94), rgba(248,252,255,0.96));
+    background: linear-gradient(180deg, rgba(255,255,255,0.95), rgba(248,252,255,0.98));
     border: 1px solid rgba(96,165,250,0.14);
     border-radius: 24px;
     padding: 22px 22px 18px 22px;
@@ -341,7 +342,7 @@ div[data-testid="stDataFrame"] {
     box-shadow: 0 8px 18px rgba(14,165,233,0.18) !important;
 }
 
-.stTextInput input, .stTextArea textarea, .stSelectbox div[data-baseweb="select"] > div {
+.stTextInput input, .stTextArea textarea, .stSelectbox div[data-baseweb="select"] > div, .stDateInput input {
     border-radius: 14px !important;
     border: 1px solid rgba(96,165,250,0.18) !important;
 }
@@ -349,6 +350,7 @@ div[data-testid="stDataFrame"] {
 .stTabs [data-baseweb="tab-list"] {
     gap: 10px;
     margin-bottom: 0.6rem;
+    overflow-x: auto;
 }
 
 .stTabs [data-baseweb="tab"] {
@@ -418,7 +420,7 @@ st.markdown("""
 <div class="hero">
     <div class="hero-title">WorkLog Pro</div>
     <div class="hero-sub">
-        Permanent cloud-backed time tracking, live work capture, dashboard analytics and mobile-ready access.
+        Permanent cloud-backed time tracking, quick manual logging, live session capture, dashboard analytics and mobile-ready access.
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -461,6 +463,54 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 # ==================================================
 
 with tab1:
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">Quick Time Entry</div>', unsafe_allow_html=True)
+    st.markdown('<div class="card-sub">Fast manual logging for completed work blocks and ad hoc entries.</div>', unsafe_allow_html=True)
+
+    q1, q2, q3, q4 = st.columns(4)
+
+    with q1:
+        quick_date = st.date_input("Date", value=date.today())
+    with q2:
+        quick_start = st.text_input("Start Time (HH:MM)", value="09:00")
+    with q3:
+        quick_end = st.text_input("End Time (HH:MM)", value="10:00")
+    with q4:
+        quick_billable = st.selectbox("Billable", ["Yes", "No"])
+
+    q5, q6 = st.columns(2)
+
+    with q5:
+        quick_client = st.text_input("Client / Entity")
+    with q6:
+        quick_task = st.text_input("Task / Work Item")
+
+    quick_remarks = st.text_area("Remarks", height=90)
+
+    quick_hours = calculate_hours(quick_start, quick_end)
+    st.info(f"Calculated Hours: {quick_hours:.2f}")
+
+    if st.button("Save Quick Entry", use_container_width=True):
+        if not quick_client.strip() or not quick_task.strip():
+            st.error("Please enter Client and Task.")
+        elif quick_hours <= 0:
+            st.error("Please enter valid Start Time and End Time.")
+        else:
+            insert_entry(
+                entry_date=quick_date,
+                start_time=quick_start,
+                end_time=quick_end,
+                hours=quick_hours,
+                client=quick_client,
+                task=quick_task,
+                remarks=quick_remarks,
+                billable=quick_billable
+            )
+            st.success("Entry saved successfully.")
+            st.rerun()
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
     left, right = st.columns([1.2, 1])
 
     with left:
@@ -553,9 +603,9 @@ with tab2:
         mode = st.selectbox("Session Mode", ["AUTO", "MANUAL"], index=0 if st.session_state.session_mode == "AUTO" else 1)
         interval = st.selectbox("Auto Log Interval (minutes)", [15, 30, 45, 60], index=[15,30,45,60].index(st.session_state.session_interval) if st.session_state.session_interval in [15,30,45,60] else 3)
         session_billable = st.selectbox("Billable", ["Yes", "No"], index=0 if st.session_state.session_billable == "Yes" else 1)
-        session_client = st.text_input("Client / Entity", value=st.session_state.session_client)
-        session_task = st.text_input("Task / Work Item", value=st.session_state.session_task)
-        session_remarks = st.text_area("Remarks", value=st.session_state.session_remarks, height=90)
+        session_client = st.text_input("Client / Entity", value=st.session_state.session_client, key="live_client")
+        session_task = st.text_input("Task / Work Item", value=st.session_state.session_task, key="live_task")
+        session_remarks = st.text_area("Remarks", value=st.session_state.session_remarks, height=90, key="live_remarks")
 
         st.session_state.session_mode = mode
         st.session_state.session_interval = interval
@@ -690,11 +740,11 @@ with tab3:
     f1, f2, f3 = st.columns(3)
 
     with f1:
-        search_text = st.text_input("Search", value="")
+        search_text = st.text_input("Search", value="", key="search_register")
     with f2:
-        filter_billable = st.selectbox("Billable Filter", ["All", "Yes", "No"])
+        filter_billable = st.selectbox("Billable Filter", ["All", "Yes", "No"], key="billable_filter")
     with f3:
-        filter_month = st.text_input("Month Filter (YYYY-MM)", value="")
+        filter_month = st.text_input("Month Filter (YYYY-MM)", value="", key="month_filter")
 
     filtered_df = df.copy()
 
@@ -761,7 +811,7 @@ with tab3:
             selector_df["task"].fillna("")
         )
 
-        selected_label = st.selectbox("Select Entry", selector_df["label"].tolist())
+        selected_label = st.selectbox("Select Entry", selector_df["label"].tolist(), key="delete_selector")
         selected_row = selector_df[selector_df["label"] == selected_label].iloc[0]
 
         if st.button("Delete Selected Entry", use_container_width=True):
