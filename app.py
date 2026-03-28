@@ -1,0 +1,892 @@
+import streamlit as st
+import sqlite3
+import pandas as pd
+import plotly.express as px
+from datetime import datetime, date, timedelta
+import uuid
+import os
+
+DB_NAME = "worklog.db"
+
+st.set_page_config(
+    page_title="WorkLog Pro",
+    page_icon="⏱️",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
+# ==================================================
+# DATABASE
+# ==================================================
+
+def get_conn():
+    return sqlite3.connect(DB_NAME, check_same_thread=False)
+
+conn = get_conn()
+
+def init_db():
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS timelog (
+            id TEXT PRIMARY KEY,
+            entry_date TEXT,
+            start_time TEXT,
+            end_time TEXT,
+            hours REAL,
+            client TEXT,
+            task TEXT,
+            remarks TEXT,
+            billable TEXT,
+            created_at TEXT
+        )
+    """)
+    conn.commit()
+
+init_db()
+
+# ==================================================
+# HELPERS
+# ==================================================
+
+def calculate_hours(start_time, end_time):
+    try:
+        s = datetime.strptime(start_time, "%H:%M")
+        e = datetime.strptime(end_time, "%H:%M")
+        diff = (e - s).total_seconds() / 3600
+        return round(diff, 2) if diff > 0 else 0
+    except:
+        return 0
+
+def insert_entry(entry_date, start_time, end_time, hours, client, task, remarks, billable):
+    conn.execute("""
+        INSERT INTO timelog (id, entry_date, start_time, end_time, hours, client, task, remarks, billable, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        str(uuid.uuid4()),
+        str(entry_date),
+        start_time,
+        end_time,
+        hours,
+        client,
+        task,
+        remarks,
+        billable,
+        datetime.now().isoformat()
+    ))
+    conn.commit()
+
+def delete_entry(row_id):
+    conn.execute("DELETE FROM timelog WHERE id=?", (row_id,))
+    conn.commit()
+
+def fetch_entries():
+    return pd.read_sql_query(
+        "SELECT * FROM timelog ORDER BY entry_date DESC, start_time DESC",
+        conn
+    )
+
+def format_hours(val):
+    try:
+        return f"{float(val):.2f}"
+    except:
+        return "0.00"
+
+def safe_text(x):
+    if pd.isna(x):
+        return ""
+    return str(x)
+
+def to_datetime_safe(series):
+    return pd.to_datetime(series, errors="coerce")
+
+def export_db_bytes():
+    if os.path.exists(DB_NAME):
+        with open(DB_NAME, "rb") as f:
+            return f.read()
+    return None
+
+# ==================================================
+# SESSION STATE
+# ==================================================
+
+defaults = {
+    "session_running": False,
+    "session_paused": False,
+    "session_mode": "AUTO",
+    "session_client": "",
+    "session_task": "",
+    "session_remarks": "",
+    "session_billable": "Yes",
+    "session_interval": 60,
+    "session_start": None,
+    "block_start": None,
+    "last_logged": "—",
+    "quick_date": date.today(),
+    "quick_start": "09:00",
+    "quick_end": "10:00",
+    "quick_billable": "Yes",
+    "quick_client": "",
+    "quick_task": "",
+    "quick_remarks": ""
+}
+
+for k, v in defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
+
+# ==================================================
+# STYLING
+# ==================================================
+
+st.markdown("""
+<style>
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+header {visibility: hidden;}
+
+html, body, [class*="css"] {
+    font-family: Arial, Helvetica, sans-serif;
+}
+
+.block-container {
+    padding-top: 1.6rem !important;
+    padding-bottom: 2rem !important;
+    max-width: 1500px;
+}
+
+.main {
+    background:
+        radial-gradient(circle at top left, rgba(219,234,254,0.78), transparent 25%),
+        radial-gradient(circle at top right, rgba(237,233,254,0.72), transparent 22%),
+        linear-gradient(180deg, #eef4ff 0%, #f8fbff 100%);
+}
+
+.hero {
+    background: rgba(255,255,255,0.88);
+    border: 1px solid rgba(148,163,184,0.12);
+    border-radius: 28px;
+    padding: 28px 30px 24px 30px;
+    box-shadow: 0 20px 48px rgba(15,23,42,0.08);
+    margin-bottom: 1.1rem;
+}
+
+.hero-title {
+    font-size: 2.25rem;
+    font-weight: 800;
+    color: #0f172a;
+    line-height: 1.12;
+    letter-spacing: -0.9px;
+    margin-bottom: 0.4rem;
+}
+
+.hero-sub {
+    color: #64748b;
+    font-size: 0.98rem;
+    line-height: 1.75;
+    max-width: 1050px;
+}
+
+.section-card {
+    background: rgba(255,255,255,0.90);
+    border: 1px solid rgba(148,163,184,0.12);
+    border-radius: 24px;
+    padding: 22px 22px 18px 22px;
+    box-shadow: 0 14px 35px rgba(15,23,42,0.07);
+    margin-bottom: 1rem;
+}
+
+.card-title {
+    font-size: 1.18rem;
+    font-weight: 800;
+    color: #0f172a;
+    margin-bottom: 0.35rem;
+    letter-spacing: -0.3px;
+}
+
+.card-sub {
+    color: #64748b;
+    font-size: 0.92rem;
+    margin-bottom: 1rem;
+    line-height: 1.7;
+}
+
+.kpi {
+    background: linear-gradient(180deg, rgba(255,255,255,0.97) 0%, rgba(248,250,252,0.96) 100%);
+    border: 1px solid rgba(148,163,184,0.12);
+    border-radius: 22px;
+    padding: 18px 18px 16px 18px;
+    box-shadow: 0 12px 28px rgba(15,23,42,0.06);
+    min-height: 128px;
+}
+
+.kpi-label {
+    color: #64748b;
+    font-size: 0.80rem;
+    text-transform: uppercase;
+    letter-spacing: 0.55px;
+    margin-bottom: 10px;
+    font-weight: 700;
+}
+
+.kpi-value {
+    font-size: 1.85rem;
+    font-weight: 800;
+    color: #0f172a;
+    line-height: 1.1;
+    letter-spacing: -0.7px;
+}
+
+.kpi-note {
+    color: #64748b;
+    font-size: 0.8rem;
+    margin-top: 10px;
+}
+
+.timer-box {
+    background: linear-gradient(180deg, rgba(239,246,255,0.88) 0%, rgba(255,255,255,0.96) 100%);
+    border: 1px solid rgba(59,130,246,0.14);
+    border-radius: 24px;
+    padding: 24px;
+    min-height: 235px;
+}
+
+.timer-big {
+    font-size: 2.7rem;
+    font-weight: 800;
+    color: #0f172a;
+    letter-spacing: -1px;
+    margin-bottom: 0.3rem;
+}
+
+.status-pill {
+    display: inline-block;
+    padding: 7px 12px;
+    border-radius: 999px;
+    background: rgba(37,99,235,0.12);
+    color: #2563eb;
+    font-size: 0.8rem;
+    font-weight: 700;
+    margin-bottom: 0.9rem;
+}
+
+.small-muted {
+    color: #64748b;
+    font-size: 0.9rem;
+    line-height: 1.8;
+}
+
+.activity-card {
+    background: linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(248,250,252,0.96) 100%);
+    border: 1px solid rgba(148,163,184,0.12);
+    border-radius: 20px;
+    padding: 16px 18px;
+    box-shadow: 0 10px 24px rgba(15,23,42,0.05);
+    margin-bottom: 0.8rem;
+}
+
+.activity-top {
+    font-weight: 800;
+    color: #0f172a;
+    margin-bottom: 0.25rem;
+}
+
+.activity-sub {
+    color: #64748b;
+    font-size: 0.88rem;
+    line-height: 1.7;
+}
+
+.pill {
+    display: inline-block;
+    padding: 5px 10px;
+    border-radius: 999px;
+    background: rgba(37,99,235,0.12);
+    color: #2563eb;
+    font-size: 0.76rem;
+    font-weight: 700;
+    margin-top: 0.6rem;
+}
+
+.pill-no {
+    background: rgba(245,158,11,0.14);
+    color: #b45309;
+}
+
+div[data-testid="stDataFrame"] {
+    border-radius: 18px !important;
+    overflow: hidden !important;
+}
+
+.stButton > button {
+    border-radius: 14px !important;
+    font-weight: 700 !important;
+    padding: 0.64rem 1rem !important;
+}
+
+.stDownloadButton > button {
+    border-radius: 14px !important;
+    font-weight: 700 !important;
+    padding: 0.64rem 1rem !important;
+}
+
+.stTextInput input, .stTextArea textarea, .stSelectbox div[data-baseweb="select"] > div {
+    border-radius: 14px !important;
+}
+
+.stTabs [data-baseweb="tab-list"] {
+    gap: 10px;
+    margin-bottom: 0.6rem;
+}
+
+.stTabs [data-baseweb="tab"] {
+    background: rgba(255,255,255,0.82);
+    border: 1px solid rgba(148,163,184,0.12);
+    border-radius: 14px;
+    padding: 10px 18px;
+    font-weight: 700;
+    color: #334155;
+}
+
+.stTabs [aria-selected="true"] {
+    background: #2563eb !important;
+    color: white !important;
+    border-color: #2563eb !important;
+}
+
+hr {
+    margin-top: 0.5rem !important;
+    margin-bottom: 1rem !important;
+    border: none;
+    border-top: 1px solid rgba(148,163,184,0.14);
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ==================================================
+# LOAD DATA
+# ==================================================
+
+df = fetch_entries()
+
+if not df.empty:
+    df["hours"] = pd.to_numeric(df["hours"], errors="coerce").fillna(0)
+    df["entry_date"] = to_datetime_safe(df["entry_date"])
+else:
+    df = pd.DataFrame(columns=[
+        "id", "entry_date", "start_time", "end_time", "hours",
+        "client", "task", "remarks", "billable", "created_at"
+    ])
+
+today = pd.Timestamp(date.today())
+this_month = today.strftime("%Y-%m")
+
+today_df = df[df["entry_date"] == today] if not df.empty else pd.DataFrame()
+week_df = df[df["entry_date"] >= (today - pd.Timedelta(days=6))] if not df.empty else pd.DataFrame()
+month_df = df[df["entry_date"].dt.strftime("%Y-%m") == this_month] if not df.empty else pd.DataFrame()
+
+total_hours = df["hours"].sum() if not df.empty else 0
+billable_hours = df[df["billable"] == "Yes"]["hours"].sum() if not df.empty else 0
+today_hours = today_df["hours"].sum() if not today_df.empty else 0
+today_billable = today_df[today_df["billable"] == "Yes"]["hours"].sum() if not today_df.empty else 0
+week_hours = week_df["hours"].sum() if not week_df.empty else 0
+month_hours = month_df["hours"].sum() if not month_df.empty else 0
+billable_pct = round((billable_hours / total_hours) * 100, 1) if total_hours > 0 else 0
+
+top_client = "—"
+top_task = "—"
+
+if not df.empty:
+    client_summary = df.groupby("client", dropna=False)["hours"].sum().sort_values(ascending=False)
+    task_summary = df.groupby("task", dropna=False)["hours"].sum().sort_values(ascending=False)
+
+    if not client_summary.empty:
+        top_client = client_summary.index[0] if str(client_summary.index[0]).strip() else "—"
+    if not task_summary.empty:
+        top_task = task_summary.index[0] if str(task_summary.index[0]).strip() else "—"
+
+# ==================================================
+# HEADER
+# ==================================================
+
+st.markdown("""
+<div class="hero">
+    <div class="hero-title">WorkLog Pro</div>
+    <div class="hero-sub">
+        Premium time tracking, live work capture, dashboard analytics and local database storage.
+        This version is structured as a proper internal work console with operational visibility.
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+# ==================================================
+# KPI ROW
+# ==================================================
+
+k1, k2, k3, k4, k5, k6 = st.columns(6)
+
+def kpi_card(col, label, value, note=""):
+    with col:
+        st.markdown(f"""
+        <div class="kpi">
+            <div class="kpi-label">{label}</div>
+            <div class="kpi-value">{value}</div>
+            <div class="kpi-note">{note}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+kpi_card(k1, "Today's Hours", format_hours(today_hours), "Current day logged effort")
+kpi_card(k2, "Today's Billable", format_hours(today_billable), "Billable execution volume")
+kpi_card(k3, "This Week", format_hours(week_hours), "Rolling 7-day output")
+kpi_card(k4, "This Month", format_hours(month_hours), "Current month work volume")
+kpi_card(k5, "Billable %", f"{billable_pct}%", "Utilisation ratio")
+kpi_card(k6, "Top Client", top_client if len(str(top_client)) < 16 else str(top_client)[:15] + "…", "Highest allocation")
+
+st.write("")
+
+# ==================================================
+# TABS
+# ==================================================
+
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "Dashboard",
+    "Live Session",
+    "Register",
+    "Analytics",
+    "Settings"
+])
+
+# ==================================================
+# TAB 1 — DASHBOARD
+# ==================================================
+
+with tab1:
+    left, right = st.columns([1.2, 1])
+
+    with left:
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.markdown('<div class="card-title">Today’s Work Sheet</div>', unsafe_allow_html=True)
+        st.markdown('<div class="card-sub">Visible operating sheet for the current day.</div>', unsafe_allow_html=True)
+
+        today_display_df = today_df.copy() if not today_df.empty else pd.DataFrame()
+
+        if not today_display_df.empty:
+            today_display_df["entry_date"] = today_display_df["entry_date"].dt.strftime("%Y-%m-%d")
+            st.dataframe(
+                today_display_df[["entry_date", "start_time", "end_time", "hours", "client", "task", "billable", "remarks"]],
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.info("No work blocks logged today.")
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with right:
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.markdown('<div class="card-title">Recent Activity</div>', unsafe_allow_html=True)
+        st.markdown('<div class="card-sub">Most recent work blocks captured in the system.</div>', unsafe_allow_html=True)
+
+        if not df.empty:
+            recent = df.head(6).copy()
+            recent["entry_date_display"] = recent["entry_date"].dt.strftime("%Y-%m-%d")
+
+            for _, r in recent.iterrows():
+                billable_class = "pill" if safe_text(r["billable"]) == "Yes" else "pill pill-no"
+                st.markdown(f"""
+                <div class="activity-card">
+                    <div class="activity-top">{safe_text(r["client"]) or "—"} • {safe_text(r["task"]) or "—"}</div>
+                    <div class="activity-sub">
+                        {safe_text(r["entry_date_display"])} | {safe_text(r["start_time"])}–{safe_text(r["end_time"])} | {format_hours(r["hours"])} hrs
+                        <br>{safe_text(r["remarks"])}
+                    </div>
+                    <div class="{billable_class}">{safe_text(r["billable"]) or "Yes"}</div>
+                </div>
+                """, unsafe_allow_html=True)
+        else:
+            st.info("Recent activity will appear after entries are logged.")
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    lower_left, lower_right = st.columns([1, 1])
+
+    with lower_left:
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.markdown('<div class="card-title">Quick Add Entry</div>', unsafe_allow_html=True)
+        st.markdown('<div class="card-sub">Fast manual entry for missed work blocks or corrections.</div>', unsafe_allow_html=True)
+
+        with st.form("quick_add_form"):
+            q1, q2 = st.columns(2)
+
+            with q1:
+                entry_date = st.date_input("Date", value=st.session_state.quick_date, key="qa_date")
+                start_time = st.text_input("Start Time (HH:MM)", value=st.session_state.quick_start, key="qa_start")
+                client = st.text_input("Client", value=st.session_state.quick_client, key="qa_client")
+                remarks = st.text_area("Remarks", value=st.session_state.quick_remarks, height=90, key="qa_remarks")
+
+            with q2:
+                end_time = st.text_input("End Time (HH:MM)", value=st.session_state.quick_end, key="qa_end")
+                billable = st.selectbox("Billable", ["Yes", "No"], index=0 if st.session_state.quick_billable == "Yes" else 1, key="qa_billable")
+                task = st.text_input("Task", value=st.session_state.quick_task, key="qa_task")
+
+            submitted = st.form_submit_button("Save Entry", use_container_width=True)
+
+            if submitted:
+                hrs = calculate_hours(start_time, end_time)
+                if hrs <= 0:
+                    st.error("End time must be later than start time.")
+                elif not task.strip():
+                    st.error("Task is required.")
+                else:
+                    insert_entry(entry_date, start_time, end_time, hrs, client, task, remarks, billable)
+                    st.success("Entry saved successfully.")
+                    st.rerun()
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with lower_right:
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.markdown('<div class="card-title">Operational Snapshot</div>', unsafe_allow_html=True)
+        st.markdown('<div class="card-sub">Quick directional view of current work allocation.</div>', unsafe_allow_html=True)
+
+        s1, s2 = st.columns(2)
+        s1.metric("Top Client", top_client)
+        s2.metric("Top Task", top_task)
+
+        s3, s4 = st.columns(2)
+        s3.metric("Total Hours", format_hours(total_hours))
+        s4.metric("Billable Hours", format_hours(billable_hours))
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+# ==================================================
+# TAB 2 — LIVE SESSION
+# ==================================================
+
+with tab2:
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">Live Session Tracker</div>', unsafe_allow_html=True)
+    st.markdown('<div class="card-sub">Use Auto Mode for structured interval capture and Manual Mode for discretionary logging.</div>', unsafe_allow_html=True)
+
+    left, right = st.columns([1.15, 1])
+
+    with left:
+        status = "Idle"
+        if st.session_state.session_running:
+            status = f"Running • {st.session_state.session_mode}"
+        elif st.session_state.session_paused:
+            status = "Paused"
+
+        if st.session_state.session_start:
+            elapsed = datetime.now() - st.session_state.session_start
+            total_seconds = int(elapsed.total_seconds())
+            hh = total_seconds // 3600
+            mm = (total_seconds % 3600) // 60
+            ss = total_seconds % 60
+            timer_text = f"{hh:02d}:{mm:02d}:{ss:02d}"
+        else:
+            timer_text = "00:00:00"
+
+        st.markdown(f"""
+        <div class="timer-box">
+            <div class="status-pill">{status}</div>
+            <div class="timer-big">{timer_text}</div>
+            <div class="small-muted">
+                Last Logged Block: <strong>{st.session_state.last_logged}</strong><br>
+                Current Client: <strong>{st.session_state.session_client or "—"}</strong><br>
+                Current Task: <strong>{st.session_state.session_task or "—"}</strong><br>
+                Billable: <strong>{st.session_state.session_billable or "Yes"}</strong>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with right:
+        mode = st.selectbox("Session Mode", ["AUTO", "MANUAL"], index=0 if st.session_state.session_mode == "AUTO" else 1)
+        interval = st.selectbox("Auto Log Interval (minutes)", [15, 30, 45, 60], index=[15,30,45,60].index(st.session_state.session_interval) if st.session_state.session_interval in [15,30,45,60] else 3)
+        session_billable = st.selectbox("Billable", ["Yes", "No"], index=0 if st.session_state.session_billable == "Yes" else 1)
+        session_client = st.text_input("Client / Entity", value=st.session_state.session_client)
+        session_task = st.text_input("Task / Work Item", value=st.session_state.session_task)
+        session_remarks = st.text_area("Remarks", value=st.session_state.session_remarks, height=90)
+
+        st.session_state.session_mode = mode
+        st.session_state.session_interval = interval
+        st.session_state.session_billable = session_billable
+        st.session_state.session_client = session_client
+        st.session_state.session_task = session_task
+        st.session_state.session_remarks = session_remarks
+
+    b1, b2, b3, b4, b5 = st.columns(5)
+
+    with b1:
+        if st.button("Start Session", use_container_width=True):
+            if not st.session_state.session_client.strip() or not st.session_state.session_task.strip():
+                st.error("Please enter Client and Task before starting a session.")
+            else:
+                st.session_state.session_running = True
+                st.session_state.session_paused = False
+                st.session_state.session_start = datetime.now()
+                st.session_state.block_start = datetime.now()
+                st.success("Session started successfully.")
+                st.rerun()
+
+    with b2:
+        if st.button("Pause", use_container_width=True):
+            if st.session_state.session_running:
+                st.session_state.session_running = False
+                st.session_state.session_paused = True
+                st.warning("Session paused.")
+                st.rerun()
+
+    with b3:
+        if st.button("Resume", use_container_width=True):
+            if st.session_state.session_paused:
+                st.session_state.session_running = True
+                st.session_state.session_paused = False
+                st.success("Session resumed.")
+                st.rerun()
+
+    with b4:
+        if st.button("Log Current Block", use_container_width=True):
+            if st.session_state.block_start:
+                now = datetime.now()
+                start_dt = st.session_state.block_start
+                end_dt = now
+                hrs = round((end_dt - start_dt).total_seconds() / 3600, 2)
+
+                if hrs > 0:
+                    insert_entry(
+                        entry_date=start_dt.date(),
+                        start_time=start_dt.strftime("%H:%M"),
+                        end_time=end_dt.strftime("%H:%M"),
+                        hours=hrs,
+                        client=st.session_state.session_client,
+                        task=st.session_state.session_task,
+                        remarks=st.session_state.session_remarks,
+                        billable=st.session_state.session_billable
+                    )
+                    st.session_state.last_logged = f"{start_dt.strftime('%H:%M')}–{end_dt.strftime('%H:%M')} ({hrs:.2f}h)"
+                    st.session_state.block_start = datetime.now()
+                    st.success("Current block logged successfully.")
+                    st.rerun()
+                else:
+                    st.error("Block duration is too short.")
+
+    with b5:
+        if st.button("Stop Session", use_container_width=True):
+            if st.session_state.block_start:
+                now = datetime.now()
+                start_dt = st.session_state.block_start
+                end_dt = now
+                hrs = round((end_dt - start_dt).total_seconds() / 3600, 2)
+
+                if hrs > 0:
+                    insert_entry(
+                        entry_date=start_dt.date(),
+                        start_time=start_dt.strftime("%H:%M"),
+                        end_time=end_dt.strftime("%H:%M"),
+                        hours=hrs,
+                        client=st.session_state.session_client,
+                        task=st.session_state.session_task,
+                        remarks=st.session_state.session_remarks,
+                        billable=st.session_state.session_billable
+                    )
+                    st.session_state.last_logged = f"{start_dt.strftime('%H:%M')}–{end_dt.strftime('%H:%M')} ({hrs:.2f}h)"
+
+            st.session_state.session_running = False
+            st.session_state.session_paused = False
+            st.session_state.session_start = None
+            st.session_state.block_start = None
+            st.success("Session stopped.")
+            st.rerun()
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ==================================================
+# AUTO MODE CHECK
+# ==================================================
+
+if st.session_state.session_running and st.session_state.session_mode == "AUTO" and st.session_state.block_start:
+    now = datetime.now()
+    mins = (now - st.session_state.block_start).total_seconds() / 60
+
+    if mins >= st.session_state.session_interval:
+        start_dt = st.session_state.block_start
+        end_dt = start_dt + timedelta(minutes=st.session_state.session_interval)
+        hrs = round((end_dt - start_dt).total_seconds() / 3600, 2)
+
+        insert_entry(
+            entry_date=start_dt.date(),
+            start_time=start_dt.strftime("%H:%M"),
+            end_time=end_dt.strftime("%H:%M"),
+            hours=hrs,
+            client=st.session_state.session_client,
+            task=st.session_state.session_task,
+            remarks=st.session_state.session_remarks,
+            billable=st.session_state.session_billable
+        )
+
+        st.session_state.last_logged = f"{start_dt.strftime('%H:%M')}–{end_dt.strftime('%H:%M')} ({hrs:.2f}h)"
+        st.session_state.block_start = end_dt
+        st.rerun()
+
+# ==================================================
+# TAB 3 — REGISTER
+# ==================================================
+
+with tab3:
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">Execution Register</div>', unsafe_allow_html=True)
+    st.markdown('<div class="card-sub">Complete searchable record of all work logs.</div>', unsafe_allow_html=True)
+
+    f1, f2, f3 = st.columns(3)
+
+    with f1:
+        search_text = st.text_input("Search", value="")
+    with f2:
+        filter_billable = st.selectbox("Billable Filter", ["All", "Yes", "No"])
+    with f3:
+        filter_month = st.text_input("Month Filter (YYYY-MM)", value="")
+
+    filtered_df = df.copy()
+
+    if not filtered_df.empty:
+        if search_text.strip():
+            q = search_text.lower().strip()
+            filtered_df = filtered_df[
+                filtered_df["client"].fillna("").str.lower().str.contains(q) |
+                filtered_df["task"].fillna("").str.lower().str.contains(q) |
+                filtered_df["remarks"].fillna("").str.lower().str.contains(q)
+            ]
+
+        if filter_billable != "All":
+            filtered_df = filtered_df[filtered_df["billable"] == filter_billable]
+
+        if filter_month.strip():
+            filtered_df = filtered_df[filtered_df["entry_date"].dt.strftime("%Y-%m") == filter_month.strip()]
+
+    if not filtered_df.empty:
+        display_df = filtered_df.copy()
+        display_df["entry_date"] = display_df["entry_date"].dt.strftime("%Y-%m-%d")
+
+        st.dataframe(
+            display_df[["entry_date", "start_time", "end_time", "hours", "client", "task", "billable", "remarks"]],
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.download_button(
+            label="Export Filtered CSV",
+            data=display_df.to_csv(index=False).encode("utf-8"),
+            file_name=f"time_log_{date.today()}.csv",
+            mime="text/csv"
+        )
+    else:
+        st.info("No entries found for current filters.")
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">Delete Specific Entry</div>', unsafe_allow_html=True)
+    st.markdown('<div class="card-sub">Use this only when you need to remove an incorrect log.</div>', unsafe_allow_html=True)
+
+    if not df.empty:
+        selector_df = df.copy()
+        selector_df["entry_date_display"] = selector_df["entry_date"].dt.strftime("%Y-%m-%d")
+        selector_df["label"] = (
+            selector_df["entry_date_display"] + " | " +
+            selector_df["start_time"].fillna("") + "-" +
+            selector_df["end_time"].fillna("") + " | " +
+            selector_df["client"].fillna("") + " | " +
+            selector_df["task"].fillna("")
+        )
+
+        selected_label = st.selectbox("Select Entry", selector_df["label"].tolist())
+        selected_row = selector_df[selector_df["label"] == selected_label].iloc[0]
+
+        if st.button("Delete Selected Entry", use_container_width=True):
+            delete_entry(selected_row["id"])
+            st.success("Entry deleted successfully.")
+            st.rerun()
+    else:
+        st.info("No entries available yet.")
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ==================================================
+# TAB 4 — ANALYTICS
+# ==================================================
+
+with tab4:
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">Analytics Dashboard</div>', unsafe_allow_html=True)
+    st.markdown('<div class="card-sub">Operational visibility across clients, tasks and daily work output.</div>', unsafe_allow_html=True)
+
+    if not df.empty:
+        a1, a2 = st.columns(2)
+
+        with a1:
+            client_chart = df.groupby("client", dropna=False)["hours"].sum().reset_index().sort_values("hours", ascending=False).head(10)
+            client_chart["client"] = client_chart["client"].replace("", "—").fillna("—")
+            fig1 = px.bar(client_chart, x="client", y="hours", title="Hours by Client")
+            st.plotly_chart(fig1, use_container_width=True)
+
+        with a2:
+            day_chart = df.groupby(df["entry_date"].dt.strftime("%Y-%m-%d"))["hours"].sum().reset_index()
+            day_chart.columns = ["date", "hours"]
+            fig2 = px.line(day_chart, x="date", y="hours", title="Hours by Day", markers=True)
+            st.plotly_chart(fig2, use_container_width=True)
+
+        b1, b2 = st.columns(2)
+
+        with b1:
+            task_chart = df.groupby("task", dropna=False)["hours"].sum().reset_index().sort_values("hours", ascending=False).head(10)
+            task_chart["task"] = task_chart["task"].replace("", "—").fillna("—")
+            fig3 = px.bar(task_chart, x="task", y="hours", title="Hours by Task")
+            st.plotly_chart(fig3, use_container_width=True)
+
+        with b2:
+            billable_chart = df.groupby("billable", dropna=False)["hours"].sum().reset_index()
+            billable_chart["billable"] = billable_chart["billable"].replace("", "—").fillna("—")
+            fig4 = px.pie(billable_chart, names="billable", values="hours", title="Billable vs Non-Billable")
+            st.plotly_chart(fig4, use_container_width=True)
+    else:
+        st.info("Analytics will appear once entries are available.")
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ==================================================
+# TAB 5 — SETTINGS
+# ==================================================
+
+with tab5:
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">System & Backup</div>', unsafe_allow_html=True)
+    st.markdown('<div class="card-sub">Use this section for backup and basic environment visibility.</div>', unsafe_allow_html=True)
+
+    s1, s2 = st.columns(2)
+    s1.metric("Database File", DB_NAME)
+    s2.metric("Total Entries", int(len(df)))
+
+    st.write("")
+
+    if not df.empty:
+        csv_data = df.copy()
+        if "entry_date" in csv_data.columns:
+            csv_data["entry_date"] = csv_data["entry_date"].dt.strftime("%Y-%m-%d")
+        st.download_button(
+            label="Download Full CSV Backup",
+            data=csv_data.to_csv(index=False).encode("utf-8"),
+            file_name=f"worklog_full_backup_{date.today()}.csv",
+            mime="text/csv"
+        )
+
+    db_bytes = export_db_bytes()
+    if db_bytes:
+        st.download_button(
+            label="Download SQLite Database Backup",
+            data=db_bytes,
+            file_name=f"worklog_backup_{date.today()}.db",
+            mime="application/octet-stream"
+        )
+
+    st.info("Best practice: keep a periodic backup of both the CSV export and the SQLite database file.")
+
+    st.markdown('</div>', unsafe_allow_html=True)
