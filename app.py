@@ -111,7 +111,7 @@ def dataframe_to_excel_bytes(df_export, sheet_name="WorkLog"):
     return output.getvalue()
 
 # ==================================================
-# SESSION STATE
+# SESSION STATE (APP STATE)
 # ==================================================
 defaults = {
     "session_running": False,
@@ -131,7 +131,7 @@ for k, v in defaults.items():
         st.session_state[k] = v
 
 # ==================================================
-# STYLING
+# PREMIUM BLUE STYLING
 # ==================================================
 st.markdown("""
 <style>
@@ -571,27 +571,60 @@ with tab2:
         """, unsafe_allow_html=True)
 
     with right:
-        mode = st.selectbox("Session Mode", ["AUTO", "MANUAL"], index=0 if st.session_state.session_mode == "AUTO" else 1, key="session_mode")
-        interval = st.selectbox("Auto Log Interval (minutes)", [15, 30, 45, 60], index=[15,30,45,60].index(st.session_state.session_interval) if st.session_state.session_interval in [15,30,45,60] else 3, key="session_interval")
-        session_billable = st.selectbox("Billable", ["Yes", "No"], index=0 if st.session_state.session_billable == "Yes" else 1, key="live_session_billable")
-        session_client = st.text_input("Client / Entity", value=st.session_state.session_client, key="live_client")
-        session_task = st.text_input("Task / Work Item", value=st.session_state.session_task, key="live_task")
-        session_remarks = st.text_area("Remarks", value=st.session_state.session_remarks, height=90, key="live_remarks")
+        ui_mode = st.selectbox(
+            "Session Mode",
+            ["AUTO", "MANUAL"],
+            index=0 if st.session_state.session_mode == "AUTO" else 1,
+            key="ui_session_mode"
+        )
 
-        st.session_state.session_mode = mode
-        st.session_state.session_interval = interval
-        st.session_state.session_billable = session_billable
-        st.session_state.session_client = session_client
-        st.session_state.session_task = session_task
-        st.session_state.session_remarks = session_remarks
+        ui_interval = st.selectbox(
+            "Auto Log Interval (minutes)",
+            [15, 30, 45, 60],
+            index=[15, 30, 45, 60].index(st.session_state.session_interval) if st.session_state.session_interval in [15, 30, 45, 60] else 3,
+            key="ui_session_interval"
+        )
+
+        ui_billable = st.selectbox(
+            "Billable",
+            ["Yes", "No"],
+            index=0 if st.session_state.session_billable == "Yes" else 1,
+            key="ui_live_session_billable"
+        )
+
+        ui_client = st.text_input(
+            "Client / Entity",
+            value=st.session_state.session_client,
+            key="ui_live_client"
+        )
+
+        ui_task = st.text_input(
+            "Task / Work Item",
+            value=st.session_state.session_task,
+            key="ui_live_task"
+        )
+
+        ui_remarks = st.text_area(
+            "Remarks",
+            value=st.session_state.session_remarks,
+            height=90,
+            key="ui_live_remarks"
+        )
 
     b1, b2, b3, b4, b5 = st.columns(5)
 
     with b1:
         if st.button("Start Session", use_container_width=True, key="start_session"):
-            if not st.session_state.session_client.strip() or not st.session_state.session_task.strip():
+            if not ui_client.strip() or not ui_task.strip():
                 st.error("Please enter Client and Task before starting a session.")
             else:
+                st.session_state.session_mode = ui_mode
+                st.session_state.session_interval = ui_interval
+                st.session_state.session_billable = ui_billable
+                st.session_state.session_client = ui_client
+                st.session_state.session_task = ui_task
+                st.session_state.session_remarks = ui_remarks
+
                 st.session_state.session_running = True
                 st.session_state.session_paused = False
                 st.session_state.session_start = datetime.now()
@@ -671,7 +704,7 @@ with tab2:
 
     st.markdown('</div>', unsafe_allow_html=True)
 
-# AUTO MODE
+# AUTO MODE CHECK
 if st.session_state.session_running and st.session_state.session_mode == "AUTO" and st.session_state.block_start:
     now = datetime.now()
     mins = (now - st.session_state.block_start).total_seconds() / 60
